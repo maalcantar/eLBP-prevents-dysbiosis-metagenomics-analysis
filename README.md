@@ -1,4 +1,4 @@
-# Engineered live biotherapeutic product prevents antibiotic-induced dysbiosis: metagenomics analysis
+# Engineered live biotherapeutic product (eLBP) prevents antibiotic-induced dysbiosis: metagenomics analysis
 
 This repository contains code needed to reproduce metagenomics (i.e., shotgun sequencing) analyses described in “Preventing antibiotic-induced dysbiosis with an engineered live biotherapeutic” (Cubillos-Ruiz et al. 2021). 
 
