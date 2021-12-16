@@ -1,0 +1,1130 @@
+---
+title: "Beta-lactamase metagenomics analysis -- custom CARD database"
+output: html_notebook
+---
+
+
+```{r}
+# Loading libraries required for analyses
+suppressMessages(library(broom))
+suppressMessages(library(cowplot))
+suppressMessages(library(ggplot2))
+suppressMessages(library(multcomp))
+suppressMessages(library(phyloseq))
+suppressMessages(library(plyr))
+suppressMessages(library(rmarkdown))
+
+# set seed to keep statistical analyses reproducible 
+set.seed(42)
+```
+
+```{r}
+# loading sample metadata from text file -- best to check output to ensure that the data loaded correctly 
+# should be 180 (samples) x 9 (features)
+sample_meta_data <- read.table(as.matrix("../data/metagenomics_metadata_v2.txt"), fill = 1, header = T, 
+    row.names = 1, stringsAsFactors = FALSE)
+
+# load ARG count matrix with updated gene names 
+# should be 2635 x 180
+ARG_genemat <- read.table("../data/custom_card_db_data/gene_counts_final_custom.tsv", fill = 1, header = T, row.names = 1, 
+    check.names = F)
+
+# load in gene lengths for normalization
+# GENE_LENGTHS_v2_custom.tsv was manually craeted by appending gene names to gene lengths
+ARG_gene_lengths <- as.matrix(read.table("../data/custom_card_db_data/GENE_LENGTHS_v2_custom.tsv", fill = 1, header = F, 
+    row.names = 1, check.names = T))
+
+# since there were a number of genes with only 1 mapped read among all samples, we are filtering the gene matrix so we are only looking at genes with at least 5 reads mapping to it
+ARG_genemat <- ARG_genemat[which(rowSums(ARG_genemat)>5),]
+ARG_gene_lengths <- data.frame(ARG_gene_lengths[which(rowSums(ARG_genemat)>5),])
+
+```
+
+
+```{r}
+# first, normalize by gene length (in kilobases)
+ARG_length_norm <- ARG_genemat/(ARG_gene_lengths[, 1]/10^3)
+
+# second, normalize by number of reads (in millions)
+# multiply by two because sequencing was paired-end
+# need to transpose because we want to divide columns (i.e., samples) and not rows (e.g., genes)
+ARG_length_read_norm <- t(t(ARG_length_norm)/(sample_meta_data[,6]*2/10^6))
+
+# convert nan values to 0 (should not be any nan values, but adding as formality)
+ARG_length_read_norm[is.na(ARG_length_read_norm)] <- 0
+
+# save column and non-sums in order to assess abundance of ARGs in each sample -- to be plotted in PRISM
+write.csv(colSums(ARG_length_read_norm), '../data/custom_card_db_data/ARG_gene_counts_norm_FPKM_custom.csv',row.names=TRUE)
+write.csv(ARG_length_read_norm, '../data/custom_card_db_data/ARG_gene_counts_all_norm_FPKM_custom.csv',row.names=TRUE)
+```
+
+
+
+```{r}
+# store normalized counts in phyloseq object
+ARG <- phyloseq(otu_table(ARG_length_read_norm, taxa_are_rows = T), sample_data(sample_meta_data))
+
+# remove samples with no or very little reads 
+# should  be 4T0, 5L1, 6L1
+ARG_mod <- subset_samples(ARG, sample_sums(ARG) > 1)
+
+# remove genes with no counts (should be several)
+ARG_mod2 <- otu_table(ARG_mod)[rowSums(otu_table(ARG_mod)) > 0]
+write.csv(row.names(ARG_mod2), '../data/custom_card_db_data/filtered_genes_custom.csv', row.names=FALSE) #this is the filtered gene list that can be annotated
+
+# load ARG taxonomy table -- this was created by i) obtaining genes that passed filtering (above) and
+# ii) manually annotating those genes for reistance class 
+# two taxonomies are available -- first column (V2) lists ARG for all genes; third column (V3) list resistance class
+ARG_tax <- read.table('../data/custom_card_db_data/card_ARG_annotation_custom.txt', fill=1, row.names=1, header=F)
+
+# # final phyloseq object for ARG -- note, this will not work until you have annotated the filtered gene list
+ARG_PHY <- phyloseq(ARG_mod2, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+
+ARG_PHY <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$treatment_group != 'LL_Load')
+
+```
+
+
+```{r}
+# This is resistance data where "probiotic-derived" reads are not removed (i.e., no pruning)
+# colors to use in stacked bar plot
+colors <- c("#FAF288", "#93C945", "#CC722A", "#894E21", "#851A19", "#BFD8F1", "#89BCE6", "#9375B5", "#426BB4", "#442D85",
+            "#E877AE", "#409091", "#1C4847", "#C4C4C4", "#767576", "#F1B8D4", "#000000" )
+
+num_classes <- 16 # total number of annotated resistance classes -- can change this if you only want the top 10 (for example) resistance classes for each time point
+tax_rank <- 2 
+
+# plot resistance class breakdown for each group (essentially showing average resistance class abundance for each group)
+# could write the code below in a for-loop, but separating out makes it easier to change things independently for each time point # (if needed)
+
+# Plotting code is adapted from Pärnänen et al. (2018) Nature Communications (https://www.nature.com/articles/s41467-018-06393-w)
+
+################### DAY 0 ################### 
+# Barplot most abundant ARGs to class level
+ARG_PHY_mod_t0 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day0')
+ARG_PHY_mod2_t0 <- otu_table(ARG_PHY_mod_t0)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_t0 <- phyloseq(ARG_PHY_mod2_t0, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t0 <- tax_glom(ARG_PHY_t0, rank_names(ARG_PHY_t0)[tax_rank])
+
+ARG_PHY_V2_t0_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t0), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t0)
+
+ ARG_PHY_V2_t0_abund <- subset_samples(ARG_PHY_V2_t0_abund, sample_sums(ARG_PHY_V2_t0_abund) !=
+     0)
+
+# Normalize by number of samples in each sample type
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t0_abund) <- (otu_table(ARG_PHY_V2_t0_abund)[, ]/num_samp_vec)
+
+# Plot
+p <- plot_bar(ARG_PHY_V2_t0_abund, "treatment_group", fill = "V3")
+a <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 0")  + ylim(0, 600) #1500000
+
+################### DAY 1 ###################
+ARG_PHY_mod_t1 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day1')
+ARG_PHY_mod2_t1 <- otu_table(ARG_PHY_mod_t1)# [rowSums(otu_table(ARG_PHY_mod_t4)) > 0]
+ARG_PHY_t1 <- phyloseq(ARG_PHY_mod2_t1, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t1 <- tax_glom(ARG_PHY_t1, rank_names(ARG_PHY_t1)[tax_rank])
+
+ARG_PHY_V2_t1_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t1), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t1)
+
+ARG_PHY_V2_t1_abund <- subset_samples(ARG_PHY_V2_t1_abund, sample_sums(ARG_PHY_V2_t1_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats,WT_repeats)
+otu_table(ARG_PHY_V2_t1_abund) <- (otu_table(ARG_PHY_V2_t1_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t1_abund, "treatment_group", fill = "V3")
+b <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 1") + ylim(0, 600)
+
+################### DAY 2 ###################
+ARG_PHY_mod_t2 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day2')
+ARG_PHY_mod2_t2 <- otu_table(ARG_PHY_mod_t2)# [rowSums(otu_table(ARG_PHY_mod_t4)) > 0]
+ARG_PHY_t2 <- phyloseq(ARG_PHY_mod2_t2, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t2 <- tax_glom(ARG_PHY_t2, rank_names(ARG_PHY_t2)[tax_rank])
+
+ARG_PHY_V2_t2_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t2), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t2)
+
+ARG_PHY_V2_t2_abund <- subset_samples(ARG_PHY_V2_t2_abund, sample_sums(ARG_PHY_V2_t2_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t2_abund) <- (otu_table(ARG_PHY_V2_t2_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t2_abund, "treatment_group", fill = "V3")
+c <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 2") + ylim(0, 600)
+
+################### DAY 3 ###################
+ARG_PHY_mod_t3 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day3')
+ARG_PHY_mod2_t3 <- otu_table(ARG_PHY_mod_t3)# [rowSums(otu_table(ARG_PHY_mod_t4)) > 0]
+ARG_PHY_t3 <- phyloseq(ARG_PHY_mod2_t3, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t3 <- tax_glom(ARG_PHY_t3, rank_names(ARG_PHY_t3)[tax_rank])
+
+ARG_PHY_V2_t3_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t3), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t3)
+
+ARG_PHY_V2_t3_abund <- subset_samples(ARG_PHY_V2_t3_abund, sample_sums(ARG_PHY_V2_t3_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t3_abund) <- (otu_table(ARG_PHY_V2_t3_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t3_abund, "treatment_group", fill = "V3")
+d <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 3") + ylim(0, 600)
+
+################### DAY 5 ###################
+ARG_PHY_mod_t5 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day5')
+ARG_PHY_mod2_t5 <- otu_table(ARG_PHY_mod_t5)# [rowSums(otu_table(ARG_PHY_mod_t5)) > 0]
+ARG_PHY_t5 <- phyloseq(ARG_PHY_mod2_t5, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t5 <- tax_glom(ARG_PHY_t5, rank_names(ARG_PHY_t5)[tax_rank])
+
+ARG_PHY_V2_t5_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t5), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t5)
+
+ARG_PHY_V2_t5_abund <- subset_samples(ARG_PHY_V2_t5_abund, sample_sums(ARG_PHY_V2_t5_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats,WT_repeats)
+otu_table(ARG_PHY_V2_t5_abund) <- (otu_table(ARG_PHY_V2_t5_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t5_abund, "treatment_group", fill = "V3")
+e <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 5") + ylim(0, 600)
+
+################### DAY 7 ###################
+ARG_PHY_mod_t7 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day7')
+ARG_PHY_mod2_t7 <- otu_table(ARG_PHY_mod_t7)# [rowSums(otu_table(ARG_PHY_mod_t7)) > 0]
+ARG_PHY_t7 <- phyloseq(ARG_PHY_mod2_t7, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t7 <- tax_glom(ARG_PHY_t7, rank_names(ARG_PHY_t7)[tax_rank])
+
+ARG_PHY_V2_t7_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t7), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t7)
+
+ARG_PHY_V2_t7_abund <- subset_samples(ARG_PHY_V2_t7_abund, sample_sums(ARG_PHY_V2_t7_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats,WT_repeats)
+otu_table(ARG_PHY_V2_t7_abund) <- (otu_table(ARG_PHY_V2_t7_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t7_abund, "treatment_group", fill = "V3")
+f <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 7") + ylim(0, 600)
+
+################### DAY 9 ###################
+ARG_PHY_mod_t9 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day9')
+ARG_PHY_mod2_t9 <- otu_table(ARG_PHY_mod_t9)# [rowSums(otu_table(ARG_PHY_mod_t9)) > 0]
+ARG_PHY_t9 <- phyloseq(ARG_PHY_mod2_t9, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t9 <- tax_glom(ARG_PHY_t9, rank_names(ARG_PHY_t9)[tax_rank])
+
+ARG_PHY_V2_t9_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t9), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t9)
+
+ARG_PHY_V2_t9_abund <- subset_samples(ARG_PHY_V2_t9_abund, sample_sums(ARG_PHY_V2_t9_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t9_abund) <- (otu_table(ARG_PHY_V2_t9_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t9_abund, "treatment_group", fill = "V3")
+g <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 9") + ylim(0, 600)
+
+################### DAY 12 ###################
+ARG_PHY_mod_t12 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day12')
+ARG_PHY_mod2_t12 <- otu_table(ARG_PHY_mod_t12)# [rowSums(otu_table(ARG_PHY_mod_t12)) > 0]
+ARG_PHY_t12 <- phyloseq(ARG_PHY_mod2_t12, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t12 <- tax_glom(ARG_PHY_t12, rank_names(ARG_PHY_t12)[tax_rank])
+
+ARG_PHY_V2_t12_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t12), TRUE)[1:num_classes]),
+    ARG_PHY_V2_t12)
+
+ARG_PHY_V2_t12_abund <- subset_samples(ARG_PHY_V2_t12_abund, sample_sums(ARG_PHY_V2_t12_abund) !=
+    0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t12_abund) <- (otu_table(ARG_PHY_V2_t12_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t12_abund, "treatment_group", fill = "V3")
+h <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + xlab("") + ylab("ARG abundance")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 12") + ylim(0, 600)
+
+
+# show and save barplot
+plot_grid(a, b, c, d,e,f,g,h, labels = "auto", align = "h")
+ggsave(filename = "../figs/ARG_abundance_breakdown_custom_no_prune.pdf",
+       plot = last_plot(),
+       device = "pdf",
+       height =10,
+       width = 11,
+       scale = 1,
+       dpi = 400
+)
+
+# saving data from stacked bar plots
+ARG_PHY_V2_t0_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t0_abund))
+row.names(ARG_PHY_V2_t0_abund_mat) <- tax_table(ARG_PHY_V2_t0_abund)[,2]
+write.csv(ARG_PHY_V2_t0_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t0_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t1_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t1_abund))
+row.names(ARG_PHY_V2_t1_abund_mat) <- tax_table(ARG_PHY_V2_t1_abund)[,2]
+write.csv(ARG_PHY_V2_t1_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t1_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t2_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t2_abund))
+row.names(ARG_PHY_V2_t2_abund_mat) <- tax_table(ARG_PHY_V2_t2_abund)[,2]
+write.csv(ARG_PHY_V2_t2_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t2_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t3_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t3_abund))
+row.names(ARG_PHY_V2_t3_abund_mat) <- tax_table(ARG_PHY_V2_t3_abund)[,2]
+write.csv(ARG_PHY_V2_t3_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t3_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t5_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t5_abund))
+row.names(ARG_PHY_V2_t5_abund_mat) <- tax_table(ARG_PHY_V2_t5_abund)[,2]
+write.csv(ARG_PHY_V2_t5_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t5_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t7_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t7_abund))
+row.names(ARG_PHY_V2_t7_abund_mat) <- tax_table(ARG_PHY_V2_t7_abund)[,2]
+write.csv(ARG_PHY_V2_t7_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t7_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t9_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t9_abund))
+row.names(ARG_PHY_V2_t9_abund_mat) <- tax_table(ARG_PHY_V2_t9_abund)[,2]
+write.csv(ARG_PHY_V2_t9_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t9_no_prune.csv',row.names=TRUE)
+
+ARG_PHY_V2_t12_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t12_abund))
+row.names(ARG_PHY_V2_t12_abund_mat) <- tax_table(ARG_PHY_V2_t12_abund)[,2]
+write.csv(ARG_PHY_V2_t12_abund_mat, '../data/custom_card_db_data/ARG_abudance_no_prune/ARG_class_abundance_t12_no_prune.csv',row.names=TRUE)
+
+```
+
+
+```{r}
+# this is resistance data where "probiotic-derived" reads are  removed (i.e., pruning)
+
+# colors to use in stacked bar plot
+colors <- c("#FAF288", "#93C945", "#CC722A", "#894E21", "#851A19", "#BFD8F1", "#89BCE6", "#9375B5", "#426BB4", "#442D85",
+            "#E877AE", "#409091", "#1C4847", "#C4C4C4", "#767576", "#F1B8D4", "#000000" )
+
+num_classes <- 15 # total number of annotated resistance classes -- can change this if you only want the top 10 (for example) resistance classes for each time point
+tax_rank <- 3 
+
+# plot resistance class breakdown for each group (essentially showing average resistance class abundance for each group)
+# could write the code below in a for-loop, but separating out makes it easier to change things independently for each time point # (if needed)
+
+################### DAY 0 ################### 
+# Barplot most abundant ARGs  to class level
+ARG_PHY_mod_t0 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day0')
+ARG_PHY_mod2_t0 <- otu_table(ARG_PHY_mod_t0)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_t0 <- phyloseq(ARG_PHY_mod2_t0, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t0 <- tax_glom(ARG_PHY_t0, rank_names(ARG_PHY_t0)[tax_rank])
+
+# Take all classes
+ARG_PHY_V2_t0 <- subset_taxa(ARG_PHY_V2_t0, V4!="probiotic-derived")
+ARG_PHY_V2_t0 <- subset_taxa(ARG_PHY_V2_t0, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t0_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t0), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t0)
+
+ ARG_PHY_V2_t0_abund <- subset_samples(ARG_PHY_V2_t0_abund, sample_sums(ARG_PHY_V2_t0_abund) !=
+     0)
+
+# Normalize by number of samples in each sample type
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t0_abund) <- (otu_table(ARG_PHY_V2_t0_abund)[, ]/num_samp_vec)
+
+# Plot
+p <- plot_bar(ARG_PHY_V2_t0_abund, "treatment_group", fill = "V3")
+a <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 0")  + ylim(0, 600) #1500000
+
+################### DAY 1 ################### 
+ARG_PHY_mod_t1 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day1')
+ARG_PHY_mod2_t1 <- otu_table(ARG_PHY_mod_t1)#[rowSums(otu_table(ARG_PHY_mod_t1)) > 0]
+ARG_PHY_t1 <- phyloseq(ARG_PHY_mod2_t1, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t1 <- tax_glom(ARG_PHY_t1, rank_names(ARG_PHY_t1)[tax_rank])
+
+ARG_PHY_V2_t1 <- subset_taxa(ARG_PHY_V2_t1, V4!="probiotic-derived")
+ARG_PHY_V2_t1 <- subset_taxa(ARG_PHY_V2_t1, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t1_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t1), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t1)
+
+ ARG_PHY_V2_t1_abund <- subset_samples(ARG_PHY_V2_t1_abund, sample_sums(ARG_PHY_V2_t1_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats,WT_repeats)
+otu_table(ARG_PHY_V2_t1_abund) <- (otu_table(ARG_PHY_V2_t1_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t1_abund, "treatment_group", fill = "V3")
+b <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 1")  + ylim(0, 600) #1500000
+
+################### DAY 2 ################### 
+ARG_PHY_mod_t2 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day2')
+ARG_PHY_mod2_t2 <- otu_table(ARG_PHY_mod_t2)#[rowSums(otu_table(ARG_PHY_mod_t2)) > 0]
+ARG_PHY_t2 <- phyloseq(ARG_PHY_mod2_t2, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t2 <- tax_glom(ARG_PHY_t2, rank_names(ARG_PHY_t2)[tax_rank])
+
+ARG_PHY_V2_t2 <- subset_taxa(ARG_PHY_V2_t2, V4!="probiotic-derived")
+ARG_PHY_V2_t2 <- subset_taxa(ARG_PHY_V2_t2, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t2_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t2), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t2)
+
+ ARG_PHY_V2_t2_abund <- subset_samples(ARG_PHY_V2_t2_abund, sample_sums(ARG_PHY_V2_t2_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t2_abund) <- (otu_table(ARG_PHY_V2_t2_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t2_abund, "treatment_group", fill = "V3")
+c <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 2")  + ylim(0, 600) #1500000
+
+################### DAY 3 ################### 
+ARG_PHY_mod_t3 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day3')
+ARG_PHY_mod2_t3 <- otu_table(ARG_PHY_mod_t3)#[rowSums(otu_table(ARG_PHY_mod_t3)) > 0]
+ARG_PHY_t3 <- phyloseq(ARG_PHY_mod2_t3, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t3 <- tax_glom(ARG_PHY_t3, rank_names(ARG_PHY_t3)[tax_rank])
+
+ARG_PHY_V2_t3 <- subset_taxa(ARG_PHY_V2_t3, V4!="probiotic-derived")
+ARG_PHY_V2_t3 <- subset_taxa(ARG_PHY_V2_t3, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t3_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t3), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t3)
+
+ ARG_PHY_V2_t3_abund <- subset_samples(ARG_PHY_V2_t3_abund, sample_sums(ARG_PHY_V2_t3_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t3_abund) <- (otu_table(ARG_PHY_V2_t3_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t3_abund, "treatment_group", fill = "V3")
+d <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 3")  + ylim(0, 600) #1500000
+
+################### DAY 5 ################### 
+ARG_PHY_mod_t5 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day5')
+ARG_PHY_mod2_t5 <- otu_table(ARG_PHY_mod_t5)#[rowSums(otu_table(ARG_PHY_mod_t5)) > 0]
+ARG_PHY_t5 <- phyloseq(ARG_PHY_mod2_t5, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t5 <- tax_glom(ARG_PHY_t5, rank_names(ARG_PHY_t5)[tax_rank])
+
+ARG_PHY_V2_t5 <- subset_taxa(ARG_PHY_V2_t5, V4!="probiotic-derived")
+ARG_PHY_V2_t5 <- subset_taxa(ARG_PHY_V2_t5, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t5_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t5), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t5)
+
+ ARG_PHY_V2_t5_abund <- subset_samples(ARG_PHY_V2_t5_abund, sample_sums(ARG_PHY_V2_t5_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t5_abund) <- (otu_table(ARG_PHY_V2_t5_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t5_abund, "treatment_group", fill = "V3")
+e <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 5")  + ylim(0, 600) #1500000
+
+################### DAY 7 ################### 
+ARG_PHY_mod_t7 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day7')
+ARG_PHY_mod2_t7 <- otu_table(ARG_PHY_mod_t7)#[rowSums(otu_table(ARG_PHY_mod_t7)) > 0]
+ARG_PHY_t7 <- phyloseq(ARG_PHY_mod2_t7, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t7 <- tax_glom(ARG_PHY_t7, rank_names(ARG_PHY_t7)[tax_rank])
+
+ARG_PHY_V2_t7 <- subset_taxa(ARG_PHY_V2_t7, V4!="probiotic-derived")
+ARG_PHY_V2_t7 <- subset_taxa(ARG_PHY_V2_t7, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t7_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t7), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t7)
+
+ ARG_PHY_V2_t7_abund <- subset_samples(ARG_PHY_V2_t7_abund, sample_sums(ARG_PHY_V2_t7_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t7_abund) <- (otu_table(ARG_PHY_V2_t7_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t7_abund, "treatment_group", fill = "V3")
+f <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 7")  + ylim(0, 600) #1500000
+
+################### DAY 9 ################### 
+# Barplot most abundant ARGs Glom to class level
+ARG_PHY_mod_t9 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day9')
+ARG_PHY_mod2_t9 <- otu_table(ARG_PHY_mod_t9)#[rowSums(otu_table(ARG_PHY_mod_t9)) > 0]
+ARG_PHY_t9 <- phyloseq(ARG_PHY_mod2_t9, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t9 <- tax_glom(ARG_PHY_t9, rank_names(ARG_PHY_t9)[tax_rank])
+
+ARG_PHY_V2_t9 <- subset_taxa(ARG_PHY_V2_t9, V4!="probiotic-derived")
+ARG_PHY_V2_t9 <- subset_taxa(ARG_PHY_V2_t9, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t9_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t9), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t9)
+
+ ARG_PHY_V2_t9_abund <- subset_samples(ARG_PHY_V2_t9_abund, sample_sums(ARG_PHY_V2_t9_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t9_abund) <- (otu_table(ARG_PHY_V2_t9_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t9_abund, "treatment_group", fill = "V3")
+g <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 9")  +  ylim(0, 600) #1500000
+
+################### DAY 12 ################### 
+ARG_PHY_mod_t12 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day12')
+ARG_PHY_mod2_t12 <- otu_table(ARG_PHY_mod_t12)#[rowSums(otu_table(ARG_PHY_mod_t12)) > 0]
+ARG_PHY_t12 <- phyloseq(ARG_PHY_mod2_t12, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t12 <- tax_glom(ARG_PHY_t12, rank_names(ARG_PHY_t12)[tax_rank])
+
+# Take all classes
+ARG_PHY_V2_t12 <- subset_taxa(ARG_PHY_V2_t12, V4!="probiotic-derived")
+ARG_PHY_V2_t12 <- subset_taxa(ARG_PHY_V2_t12, V3!="chloramphenicol")
+
+
+ARG_PHY_V2_t12_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t12), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t12)
+
+ ARG_PHY_V2_t12_abund <- subset_samples(ARG_PHY_V2_t12_abund, sample_sums(ARG_PHY_V2_t12_abund) !=
+     0)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['WT',][1]*num_classes)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['spTEM1',][1]*num_classes)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t12_abund) <- (otu_table(ARG_PHY_V2_t12_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t12_abund, "treatment_group", fill = "V3")
+h <- p + geom_bar(aes(color = V3, fill = V3), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 12")  + ylim(0, 600) #1500000
+
+# show and save barplot
+plot_grid(a, b, c, d,e,f,g,h, labels = "auto", align = "h")
+ggsave(filename = "../figs/ARG_abundance_breakdown_custom.pdf",
+       plot = last_plot(),
+       device = "pdf",
+       height =10,
+       width = 11,
+       scale = 1,
+       dpi = 400
+)
+
+
+# saving data from stacked bar plots
+ARG_PHY_V2_t0_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t0_abund))
+row.names(ARG_PHY_V2_t0_abund_mat) <- tax_table(ARG_PHY_V2_t0_abund)[,2]
+write.csv(ARG_PHY_V2_t0_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t0_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t1_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t1_abund))
+row.names(ARG_PHY_V2_t1_abund_mat) <- tax_table(ARG_PHY_V2_t1_abund)[,2]
+write.csv(ARG_PHY_V2_t1_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t1_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t2_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t2_abund))
+row.names(ARG_PHY_V2_t2_abund_mat) <- tax_table(ARG_PHY_V2_t2_abund)[,2]
+write.csv(ARG_PHY_V2_t2_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t2_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t3_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t3_abund))
+row.names(ARG_PHY_V2_t3_abund_mat) <- tax_table(ARG_PHY_V2_t3_abund)[,2]
+write.csv(ARG_PHY_V2_t3_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t3_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t5_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t5_abund))
+row.names(ARG_PHY_V2_t5_abund_mat) <- tax_table(ARG_PHY_V2_t5_abund)[,2]
+write.csv(ARG_PHY_V2_t5_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t5_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t7_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t7_abund))
+row.names(ARG_PHY_V2_t7_abund_mat) <- tax_table(ARG_PHY_V2_t7_abund)[,2]
+write.csv(ARG_PHY_V2_t7_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t7_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t9_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t9_abund))
+row.names(ARG_PHY_V2_t9_abund_mat) <- tax_table(ARG_PHY_V2_t9_abund)[,2]
+write.csv(ARG_PHY_V2_t9_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t9_pruned.csv',row.names=TRUE)
+
+ARG_PHY_V2_t12_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t12_abund))
+row.names(ARG_PHY_V2_t12_abund_mat) <- tax_table(ARG_PHY_V2_t12_abund)[,2]
+write.csv(ARG_PHY_V2_t12_abund_mat, '../data/custom_card_db_data/ARG_abudance_pruned/ARG_class_abundance_t12_pruned.csv',row.names=TRUE)
+```
+
+```{r}
+# Use negative binomial generalized linear model (unpaired test) with Tukey's post-hoc rest to calculate difference in endegenous beta-lactamase abundance between groups. 
+
+# recreate pruned phyloseq object
+ARG_PHY_mod_all_prune_blactam <- ARG_PHY
+ARG_PHY_mod2_all_prune_blactam <- otu_table(ARG_PHY_mod_all_prune_blactam)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_all_prune_blactam <- phyloseq(ARG_PHY_mod2_all_prune_blactam, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_all_prune_blactam <- tax_glom(ARG_PHY_all_prune_blactam, rank_names(ARG_PHY_all_prune_blactam)[tax_rank])
+
+# Remove probiotic-derived reads
+ARG_PHY_V2_all_prune_blactam <- subset_taxa(ARG_PHY_V2_all_prune_blactam, V4!="probiotic-derived")
+
+ARG_PHY_V2_all_prune_abund_blactam <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_all_prune_blactam), TRUE)[1:num_classes]),
+    ARG_PHY_V2_all_prune_blactam)
+
+# sample groups to compare (only compare beta-lactam resistance class)
+df <- data.frame(SUM = round((sample_sums(subset_taxa(subset_samples(ARG_PHY_V2_all_prune_abund_blactam,
+    treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")), V3 == "beta_lactam")))),
+    treatment_group_time_point_day = sample_data(subset_samples(ARG_PHY_V2_all_prune_abund_blactam, treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")))$treatment_group_time_point_day)
+
+# create model
+fit <- glm.nb(SUM ~ treatment_group_time_point_day, data = df, link = log)
+# apply tukey post-hoc test and create statistical summary
+glht.mod <- glht(fit, mcp(treatment_group_time_point_day = "Tukey"))
+result_blactam <- summary(glht(glht.mod))
+
+# organize results into tidier table
+result_blactam_tidy <- tidy(result_blactam)
+result_blactam_tidy <- result_blactam_tidy[ , -which(names(result_blactam_tidy) %in% c("rhs"))]
+result_blactam_tidy <- rename(result_blactam_tidy, c("lhs"="linear hypothesis","statistic" = "z value", "p.value" = "adjusted p-value"))
+significance_blactam_vec = c()
+for (p_val in result_blactam_tidy$`adjusted p-value`) {
+    if ((p_val <= 0.1) & (p_val > 0.05)){
+        significance_blactam_vec <- append(significance_blactam_vec,'.')
+        } else if ((p_val <= 0.05)  & (p_val > 0.01)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'*')
+        } else if ((p_val <= 0.01)  & (p_val > 0.001)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'**')
+        }else if (p_val <= 0.001)  {
+        significance_blactam_vec <- append(significance_blactam_vec,'***')
+        }
+    else {
+            significance_blactam_vec <- append(significance_blactam_vec,'')
+        }
+}
+lin_hyp_updated_vec <- c()
+for (hyp in result_blactam_tidy$`linear hypothesis`) {
+   lin_hyp_updated_vec <- append(lin_hyp_updated_vec, paste(hyp,  "== 0"))
+}
+result_blactam_tidy$significance <- significance_blactam_vec
+result_blactam_tidy$`linear hypothesis` <- lin_hyp_updated_vec
+result_blactam_tidy
+write.csv(result_blactam_tidy, "../data/custom_card_db_data/blactam_abundance_significance_custom.csv", row.names = FALSE)
+```
+
+```{r}
+# Use negative binomial generalized linear model (unpaired test) with Tukey's post-hoc rest to calculate difference in total (non-probiotic-derived) resistance gene abundance
+
+# recreate pruned phyloseq object
+ARG_PHY_mod_all_prune <- ARG_PHY
+ARG_PHY_mod2_all_prune <- otu_table(ARG_PHY_mod_all_prune)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_all_prune <- phyloseq(ARG_PHY_mod2_all_prune, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_all_prune <- tax_glom(ARG_PHY_all_prune, rank_names(ARG_PHY_all_prune)[tax_rank])
+
+# Take all classes except for probiotic-derived reads and chloramphenicol (since all chloramphenicol reads
+# are probiotic-derived)
+ARG_PHY_V2_all_prune <- subset_taxa(ARG_PHY_V2_all_prune, V4!="probiotic-derived")
+ARG_PHY_V2_all_prune <- subset_taxa(ARG_PHY_V2_all_prune, V3!="chloramphenicol")
+
+ARG_PHY_V2_all_prune_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_all_prune), TRUE)[1:num_classes]),
+    ARG_PHY_V2_all_prune)
+
+ ARG_PHY_V2_all_prune_abund <- subset_samples(ARG_PHY_V2_all_prune_abund, sample_sums(ARG_PHY_V2_all_prune_abund) !=
+     0)
+# sample groups to compare 
+df <- data.frame(SUM = round((sample_sums(subset_taxa(subset_samples(ARG_PHY_V2_all_prune_abund,
+    treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")))))),
+    treatment_group_time_point_day = sample_data(subset_samples(ARG_PHY_V2_all_prune_abund, treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")))$treatment_group_time_point_day)
+
+# create model
+fit <- glm.nb(SUM ~ treatment_group_time_point_day, data = df, link = log)
+
+# apply tukey post-hoc test and create statistical summary
+glht.mod <- glht(fit, mcp(treatment_group_time_point_day = "Tukey"))
+result_blactam <- summary(glht(glht.mod))
+
+# organize results into tidier table
+result_blactam_tidy <- tidy(result_blactam)
+# result_blactam_tidy <- result_blactam_tidy[ , -which(names(result_blactam_tidy) %in% c("rhs"))]
+result_blactam_tidy <- rename(result_blactam_tidy, c("contrast"="linear hypothesis","statistic" = "z value", "adj.p.value" = "adjusted p-value"))
+significance_blactam_vec = c()
+
+for (p_val in result_blactam_tidy$`adjusted p-value`) {
+    if ((p_val <= 0.1) & (p_val > 0.05)){
+        significance_blactam_vec <- append(significance_blactam_vec,'.')
+        } else if ((p_val <= 0.05)  & (p_val > 0.01)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'*')
+        } else if ((p_val <= 0.01)  & (p_val > 0.001)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'**')
+        }else if (p_val <= 0.001)  {
+        significance_blactam_vec <- append(significance_blactam_vec,'***')
+        }
+    else {
+            significance_blactam_vec <- append(significance_blactam_vec,'')
+        }
+}
+lin_hyp_updated_vec <- c()
+for (hyp in result_blactam_tidy$`linear hypothesis`) {
+   lin_hyp_updated_vec <- append(lin_hyp_updated_vec, paste(hyp,  "== 0"))
+}
+result_blactam_tidy$significance <- significance_blactam_vec
+result_blactam_tidy$`linear hypothesis` <- lin_hyp_updated_vec
+result_blactam_tidy
+write.csv(result_blactam_tidy, "../data/custom_card_db_data/ARG_negative_binomial_noVector_noChloramphenicol_abundance_significance_custom.csv", row.names = FALSE)
+```
+
+```{r}
+# Use Wilcoxon test (e.g., Mann-Whitney test / Wilcoxon rank sum test) with Benjamini-Hochberg FDR correction to calculate difference in endegenous beta-lactamase gene abundances. 
+
+# recreate phyloseq object
+ARG_PHY_mod_all_prune_blactam <- ARG_PHY
+ARG_PHY_mod2_all_prune_blactam <- otu_table(ARG_PHY_mod_all_prune_blactam)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_all_prune_blactam <- phyloseq(ARG_PHY_mod2_all_prune_blactam, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_all_prune_blactam <- tax_glom(ARG_PHY_all_prune_blactam, rank_names(ARG_PHY_all_prune_blactam)[tax_rank])
+
+# Remove probiotic-derived reads
+ARG_PHY_V2_all_prune_blactam <- subset_taxa(ARG_PHY_V2_all_prune_blactam, V4!="probiotic-derived")
+
+ARG_PHY_V2_all_prune_abund_blactam <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_all_prune_blactam), TRUE)[1:num_classes]),
+    ARG_PHY_V2_all_prune_blactam)
+
+# sample groups to compare 
+df <- data.frame(SUM = (sample_sums(subset_taxa(subset_samples(ARG_PHY_V2_all_prune_abund_blactam,
+    treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")), V3 == "beta_lactam"))),
+    treatment_group_time_point_day = sample_data(subset_samples(ARG_PHY_V2_all_prune_abund_blactam, treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")))$treatment_group_time_point_day)
+
+# perform Wilcoxon test with FDR-correction
+endogenous_Blactamase_stats <- pairwise.wilcox.test(df$SUM, df$treatment_group_time_point_day, p.adjust.method="fdr", exact=FALSE)
+endogenous_Blactamase_stats_p_vals <-endogenous_Blactamase_stats$p.value
+endogenous_Blactamase_stats_df <- data.frame(expand.grid(dimnames(endogenous_Blactamase_stats_p_vals)),array(endogenous_Blactamase_stats_p_vals))
+endogenous_Blactamase_stats_df <- na.omit(endogenous_Blactamase_stats_df)
+
+# create tidier summary of results
+endogenous_Blactamase_stats_df_tidy <- rename(endogenous_Blactamase_stats_df, c("Var1"="group1","Var2" = "group2", "array.endogenous_Blactamase_stats_p_vals." = "adjusted p-value"))
+significance_blactam_vec = c()
+
+for (p_val in endogenous_Blactamase_stats_df_tidy$`adjusted p-value`) {
+    if ((p_val <= 0.1) & (p_val > 0.05)){
+        significance_blactam_vec <- append(significance_blactam_vec,'.')
+        } else if ((p_val <= 0.05)  & (p_val > 0.01)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'*')
+        } else if ((p_val <= 0.01)  & (p_val > 0.001)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'**')
+        }else if (p_val <= 0.001)  {
+        significance_blactam_vec <- append(significance_blactam_vec,'***')
+        }
+    else {
+            significance_blactam_vec <- append(significance_blactam_vec,'')
+        }
+}
+
+endogenous_Blactamase_stats_df_tidy$significance <- significance_blactam_vec
+endogenous_Blactamase_stats_df_tidy
+write.csv(endogenous_Blactamase_stats_df_tidy, "../data/custom_card_db_data/ARG_Wilcoxon_endogenous_Blactamase_abundance_significance_custom.csv", row.names = FALSE)
+
+```
+
+```{r}
+# Use Wilcoxon test (e.g., Mann-Whitney test / Wilcoxon rank sum test) with Benjamini-Hochberg FDR correction to calculate difference in endegenous total resistance abundance.. 
+
+# recreate phyloseq object
+
+ARG_PHY_mod_all_prune <- ARG_PHY
+ARG_PHY_mod2_all_prune <- otu_table(ARG_PHY_mod_all_prune)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_all_prune <- phyloseq(ARG_PHY_mod2_all_prune, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_all_prune <- tax_glom(ARG_PHY_all_prune, rank_names(ARG_PHY_all_prune)[tax_rank])
+
+# Remove probiotic-derived reads abd chloramphenicol (which is probiotic-derived)
+ARG_PHY_V2_all_prune <- subset_taxa(ARG_PHY_V2_all_prune, V4!="probiotic-derived")
+ARG_PHY_V2_all_prune <- subset_taxa(ARG_PHY_V2_all_prune, V3!="chloramphenicol")
+
+ARG_PHY_V2_all_prune_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_all_prune), TRUE)[1:num_classes]),
+    ARG_PHY_V2_all_prune)
+
+ ARG_PHY_V2_all_prune_abund <- subset_samples(ARG_PHY_V2_all_prune_abund, sample_sums(ARG_PHY_V2_all_prune_abund) !=
+     0)
+ 
+# sample groups to compare 
+df <- data.frame(SUM = (sample_sums(subset_taxa(subset_samples(ARG_PHY_V2_all_prune_abund,
+    treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12"))))),
+    treatment_group_time_point_day = sample_data(subset_samples(ARG_PHY_V2_all_prune_abund, treatment_group_time_point_day %in% c("spTEM1-day0", "WT-day0", "spTEM1-day1", "WT-day1", "spTEM1-day2", "WT-day2", "spTEM1-day3", "WT-day3", "spTEM1-day5","WT-day5", "spTEM1-day7", "WT-day7", "spTEM1-day9", "WT-day9", "spTEM1-day12", "WT-day12")))$treatment_group_time_point_day)
+
+# perform Wilcoxon test with FDR-correction
+pruned_ARG_resistance_stats <- pairwise.wilcox.test(df$SUM, df$treatment_group_time_point_day, p.adjust.method="fdr", exact=FALSE)
+pruned_ARG_resistance_stats_p_vals <-pruned_ARG_resistance_stats$p.value
+pruned_ARG_resistance_stats_df <- data.frame(expand.grid(dimnames(pruned_ARG_resistance_stats_p_vals)),array(pruned_ARG_resistance_stats_p_vals))
+pruned_ARG_resistance_stats_df <- na.omit(pruned_ARG_resistance_stats_df)
+
+# create tidier summary of results
+pruned_ARG_resistance_stats_df_tidy <- rename(pruned_ARG_resistance_stats_df, c("Var1"="group1","Var2" = "group2", "array.pruned_ARG_resistance_stats_p_vals." = "adjusted p-value"))
+significance_blactam_vec = c()
+
+for (p_val in pruned_ARG_resistance_stats_df_tidy$`adjusted p-value`) {
+    if ((p_val <= 0.1) & (p_val > 0.05)){
+        significance_blactam_vec <- append(significance_blactam_vec,'.')
+        } else if ((p_val <= 0.05)  & (p_val > 0.01)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'*')
+        } else if ((p_val <= 0.01)  & (p_val > 0.001)) {
+        significance_blactam_vec <- append(significance_blactam_vec,'**')
+        }else if (p_val <= 0.001)  {
+        significance_blactam_vec <- append(significance_blactam_vec,'***')
+        }
+    else {
+            significance_blactam_vec <- append(significance_blactam_vec,'')
+        }
+}
+
+pruned_ARG_resistance_stats_df_tidy$significance <- significance_blactam_vec
+pruned_ARG_resistance_stats_df_tidy
+write.csv(pruned_ARG_resistance_stats_df_tidy, "../data/custom_card_db_data/ARG_Wilcoxon_noVector_noChloramphenicol_significance_custom.csv", row.names = FALSE)
+
+
+```
+
+
+```{r}
+# plot B-lactam resistance abundance 
+
+# colors to use in stacked bar plot
+colors <- c("#CC722A", "#000000")
+
+num_classes <- 16 # total number of annotated resistance classes -- can change this if you only want the top 10 (for example) resistance classes for each time point
+tax_rank <- 3
+
+# plot resistance class breakdown for each group (essentially showing average resistance class abundance for each group)
+# could write the code below in a for-loop, but separating out makes it easier to change things independently for each time point # (if needed)
+
+################### DAY 0 ################### 
+# Barplot most abundant ARGs to class level
+ARG_PHY_mod_t0 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day0')
+ARG_PHY_mod2_t0 <- otu_table(ARG_PHY_mod_t0)#[rowSums(otu_table(ARG_PHY_mod_t0)) > 0]
+ARG_PHY_t0 <- phyloseq(ARG_PHY_mod2_t0, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t0 <- tax_glom(ARG_PHY_t0, rank_names(ARG_PHY_t0)[tax_rank])
+
+# Take all classes
+ARG_PHY_V2_t0 <- subset_taxa(ARG_PHY_V2_t0, V3=="beta_lactam")
+
+ARG_PHY_V2_t0_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t0), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t0)
+
+ # ARG_PHY_V2_t0_abund <- subset_samples(ARG_PHY_V2_t0_abund, sample_sums(ARG_PHY_V2_t0_abund) !=
+ #     0)
+
+# # Normalize by number of samples in each sample type
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t0_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t0_abund) <- (otu_table(ARG_PHY_V2_t0_abund)[, ]/num_samp_vec)
+
+# Plot
+p <- plot_bar(ARG_PHY_V2_t0_abund, "treatment_group", fill = "V4")
+a <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 0")  + ylim(0, 600) #1500000
+
+################### DAY 1 ################### 
+ARG_PHY_mod_t1 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day1')
+ARG_PHY_mod2_t1 <- otu_table(ARG_PHY_mod_t1)#[rowSums(otu_table(ARG_PHY_mod_t1)) > 0]
+ARG_PHY_t1 <- phyloseq(ARG_PHY_mod2_t1, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t1 <- tax_glom(ARG_PHY_t1, rank_names(ARG_PHY_t1)[tax_rank])
+
+ARG_PHY_V2_t1 <- subset_taxa(ARG_PHY_V2_t1, V3=="beta_lactam")
+
+ARG_PHY_V2_t1_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t1), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t1)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t1_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t1_abund) <- (otu_table(ARG_PHY_V2_t1_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t1_abund, "treatment_group", fill = "V4")
+b <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 1")  + ylim(0, 600) #1500000
+
+################### DAY 2 ################### 
+ARG_PHY_mod_t2 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day2')
+ARG_PHY_mod2_t2 <- otu_table(ARG_PHY_mod_t2)#[rowSums(otu_table(ARG_PHY_mod_t2)) > 0]
+ARG_PHY_t2 <- phyloseq(ARG_PHY_mod2_t2, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t2 <- tax_glom(ARG_PHY_t2, rank_names(ARG_PHY_t2)[tax_rank])
+
+ARG_PHY_V2_t2 <- subset_taxa(ARG_PHY_V2_t2, V3=="beta_lactam")
+
+ARG_PHY_V2_t2_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t2), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t2)
+
+# Normalize by number of samples in each sample type
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t2_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t2_abund) <- (otu_table(ARG_PHY_V2_t2_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t2_abund, "treatment_group", fill = "V4")
+c <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 2")  + ylim(0, 600) #15000
+
+################### DAY 3 ################### 
+ARG_PHY_mod_t3 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day3')
+ARG_PHY_mod2_t3 <- otu_table(ARG_PHY_mod_t3)#[rowSums(otu_table(ARG_PHY_mod_t3)) > 0]
+ARG_PHY_t3 <- phyloseq(ARG_PHY_mod2_t3, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t3 <- tax_glom(ARG_PHY_t3, rank_names(ARG_PHY_t3)[tax_rank])
+
+ARG_PHY_V2_t3 <- subset_taxa(ARG_PHY_V2_t3, V3=="beta_lactam")
+
+ARG_PHY_V2_t3_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t3), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t3)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t3_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t3_abund) <- (otu_table(ARG_PHY_V2_t3_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t3_abund, "treatment_group", fill = "V4")
+d <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 3")  + ylim(0, 600) #1500000
+
+################### DAY 5 ################### 
+ARG_PHY_mod_t5 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day5')
+ARG_PHY_mod2_t5 <- otu_table(ARG_PHY_mod_t5)#[rowSums(otu_table(ARG_PHY_mod_t5)) > 0]
+ARG_PHY_t5 <- phyloseq(ARG_PHY_mod2_t5, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t5 <- tax_glom(ARG_PHY_t5, rank_names(ARG_PHY_t5)[tax_rank])
+
+ARG_PHY_V2_t5 <- subset_taxa(ARG_PHY_V2_t5, V3=="beta_lactam")
+
+ARG_PHY_V2_t5_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t5), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t5)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t5_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t5_abund) <- (otu_table(ARG_PHY_V2_t5_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t5_abund, "treatment_group", fill = "V4")
+e <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 5")  + ylim(0, 600) #1500000
+
+################### DAY 7 ################### 
+ARG_PHY_mod_t7 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day7')
+ARG_PHY_mod2_t7 <- otu_table(ARG_PHY_mod_t7)#[rowSums(otu_table(ARG_PHY_mod_t7)) > 0]
+ARG_PHY_t7 <- phyloseq(ARG_PHY_mod2_t7, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t7 <- tax_glom(ARG_PHY_t7, rank_names(ARG_PHY_t7)[tax_rank])
+
+ARG_PHY_V2_t7 <- subset_taxa(ARG_PHY_V2_t7, V3=="beta_lactam")
+
+ARG_PHY_V2_t7_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t7), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t7)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t7_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t7_abund) <- (otu_table(ARG_PHY_V2_t7_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t7_abund, "treatment_group", fill = "V4")
+f <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 7")  + ylim(0, 600) #1500000
+
+################### DAY 9 ################### 
+ARG_PHY_mod_t9 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day9')
+ARG_PHY_mod2_t9 <- otu_table(ARG_PHY_mod_t9)#[rowSums(otu_table(ARG_PHY_mod_t9)) > 0]
+ARG_PHY_t9 <- phyloseq(ARG_PHY_mod2_t9, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t9 <- tax_glom(ARG_PHY_t9, rank_names(ARG_PHY_t9)[tax_rank])
+
+ARG_PHY_V2_t9 <- subset_taxa(ARG_PHY_V2_t9, V3=="beta_lactam")
+
+ARG_PHY_V2_t9_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t9), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t9)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t9_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t9_abund) <- (otu_table(ARG_PHY_V2_t9_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t9_abund, "treatment_group", fill = "V4")
+g <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 9")  + ylim(0, 600) #1500000
+
+################### DAY 12 ################### 
+ARG_PHY_mod_t12 <- subset_samples(ARG_PHY, sample_data(ARG_PHY)$time_point_day_str == 'day12')
+ARG_PHY_mod2_t12 <- otu_table(ARG_PHY_mod_t12)#[rowSums(otu_table(ARG_PHY_mod_t12)) > 0]
+ARG_PHY_t12 <- phyloseq(ARG_PHY_mod2_t12, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_t12 <- tax_glom(ARG_PHY_t12, rank_names(ARG_PHY_t12)[tax_rank])
+
+ARG_PHY_V2_t12 <- subset_taxa(ARG_PHY_V2_t12, V3=="beta_lactam")
+
+ARG_PHY_V2_t12_abund <- prune_taxa(names(sort(taxa_sums(ARG_PHY_V2_t12), TRUE)[1:num_classes]), 
+    ARG_PHY_V2_t12)
+
+WT_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['WT',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['WT',][1]*2)
+SpTEM1_repeats <- rep(c(as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['spTEM1',][1]), times=as.matrix(table(sample_data(ARG_PHY_V2_t12_abund)$treatment_group))['spTEM1',][1]*2)
+
+num_samp_vec <- c(SpTEM1_repeats, WT_repeats)
+otu_table(ARG_PHY_V2_t12_abund) <- (otu_table(ARG_PHY_V2_t12_abund)[, ]/num_samp_vec)
+
+p <- plot_bar(ARG_PHY_V2_t12_abund, "treatment_group", fill = "V4")
+h <- p + geom_bar(aes(color = V4, fill = V4), stat = "identity", position = "stack") +
+    scale_fill_manual(values = colors, "Resistance class") + scale_color_manual(values = colors,
+    "Resistance class") + ylab("ARG abundance") + xlab("") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    labs(title = "Day 12")  + ylim(0, 600) #1500000
+
+# show and save barplot
+plot_grid(a, b, c, d,e,f,g,h, labels = "auto", align = "h")
+ggsave(filename = "../figs/ARG_abundance_breakdown_custom_beta_lactam.pdf",
+       plot = last_plot(),
+       device = "pdf",
+       height =10,
+       width = 11,
+       scale = 1,
+       dpi = 400
+)
+
+# saving data from stacked bar plots
+ARG_PHY_V2_t0_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t0_abund))
+row.names(ARG_PHY_V2_t0_abund_mat) <- tax_table(ARG_PHY_V2_t0_abund)[,3]
+write.csv(ARG_PHY_V2_t0_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t0_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t1_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t1_abund))
+row.names(ARG_PHY_V2_t1_abund_mat) <- tax_table(ARG_PHY_V2_t1_abund)[,3]
+write.csv(ARG_PHY_V2_t1_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t1_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t2_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t2_abund))
+row.names(ARG_PHY_V2_t2_abund_mat) <- tax_table(ARG_PHY_V2_t2_abund)[,3]
+write.csv(ARG_PHY_V2_t2_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t2_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t3_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t3_abund))
+row.names(ARG_PHY_V2_t3_abund_mat) <- tax_table(ARG_PHY_V2_t3_abund)[,3]
+write.csv(ARG_PHY_V2_t3_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t3_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t5_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t5_abund))
+row.names(ARG_PHY_V2_t5_abund_mat) <- tax_table(ARG_PHY_V2_t5_abund)[,3]
+write.csv(ARG_PHY_V2_t5_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t5_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t7_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t7_abund))
+row.names(ARG_PHY_V2_t7_abund_mat) <- tax_table(ARG_PHY_V2_t7_abund)[,3]
+write.csv(ARG_PHY_V2_t7_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t7_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t9_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t9_abund))
+row.names(ARG_PHY_V2_t9_abund_mat) <- tax_table(ARG_PHY_V2_t9_abund)[,3]
+write.csv(ARG_PHY_V2_t9_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t9_beta_lactam.csv',row.names=TRUE)
+
+ARG_PHY_V2_t12_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_t12_abund))
+row.names(ARG_PHY_V2_t12_abund_mat) <- tax_table(ARG_PHY_V2_t12_abund)[,3]
+write.csv(ARG_PHY_V2_t12_abund_mat, '../data/custom_card_db_data/ARG_abudance_beta_lactam/ARG_class_abundance_t12_beta_lactam.csv',row.names=TRUE)
+
+
+```
+
+```{r}
+# Values for B-lactamase abundances 
+
+ARG_PHY_mod_blactam <- subset_samples(ARG_PHY)
+ARG_PHY_mod2_blactam <- otu_table(ARG_PHY_mod_blactam)#[rowSums(otu_table(ARG_PHY_mod_t10)) > 0]
+ARG_PHY_blactam <- phyloseq(ARG_PHY_mod2_blactam, sample_data(sample_meta_data), tax_table(as.matrix(ARG_tax)))
+ARG_PHY_V2_blactam <- tax_glom(ARG_PHY_blactam, rank_names(ARG_PHY_blactam)[tax_rank])
+
+# Take all classes
+ARG_PHY_V2_blactam <- subset_taxa(ARG_PHY_V2_blactam, V3=="beta_lactam")
+
+ARG_PHY_V2_blactam_abund_mat <-as.matrix(otu_table(ARG_PHY_V2_blactam))
+row.names(ARG_PHY_V2_blactam_abund_mat) <- tax_table(ARG_PHY_V2_blactam)[,3]
+ARG_PHY_V2_blactam_abund_mat
+write.csv(ARG_PHY_V2_blactam_abund_mat, '../data/custom_card_db_data/ARG_abundance_non-normalized/ARG_Blactam_abundance.csv',row.names=TRUE)
+
+```
+
+
+
