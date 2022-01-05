@@ -26,7 +26,7 @@ Additional requirements:
 * Bowtie2 v2.2.6
 * Samtools v1.6
 
-The majority of the metagenomic sequence processing and analyses were conducted using the Commonwealth Computational Cloud for Data Driven Biology ([C3DDB](https://www.mghpcc.org/resources/computer-systems-at-the-mghpcc/c3ddb/)) cluster.
+The majority of the metagenomic sequence processing and analyses were conducted using the Commonwealth Computational Cloud for Data Driven Biology ([C3DDB](https://www.mghpcc.org/c3ddb/)) cluster.
 
 # Directory structure
 
