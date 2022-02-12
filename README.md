@@ -1,6 +1,6 @@
 # Engineered live biotherapeutic product (eLBP) prevents antibiotic-induced dysbiosis: metagenomics analysis
 
-This repository contains code needed to reproduce metagenomics (i.e., shotgun sequencing) analyses described in “Preventing antibiotic-induced dysbiosis with an engineered live biotherapeutic” (Cubillos-Ruiz et al. 2021). 
+This repository contains code needed to reproduce metagenomics (i.e., shotgun sequencing) analyses described in “An engineered live biotherapeutic for the prevention of antibiotic-induced dysbiosis” (Cubillos-Ruiz et al. 2022). 
 
 # Installation & requirements  
 
@@ -49,7 +49,7 @@ All data files are found in and/or will be written to <code>data/</code>
 * * <code>data/sequencing/</code> 
   * contains sequencing data and results for some analysis applied to sequencing data.
 
- Metagenomics Sequencing data is not included in this repository due to their large file sizes; however, all data is deposited in the SRA at:
+ Metagenomics Sequencing data is not included in this repository due to their large file sizes; however, all data are publicly available under NCBI Bioproject PRJNA803721.
 
 ### figures
 
