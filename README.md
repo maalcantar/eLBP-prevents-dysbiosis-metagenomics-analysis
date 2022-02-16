@@ -46,7 +46,7 @@ All data files are found in and/or will be written to <code>data/</code>
   * directory where mouse reference genome should be stored.
   mouse reference genome can be downloaded from: https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.26_GRCm38.p6/
    * the actual genome file is called: GCF_000001635.26_GRCm38.p6_genomic.fna.gz
-* * <code>data/sequencing/</code> 
+* <code>data/sequencing/</code> 
   * contains sequencing data and results for some analysis applied to sequencing data.
 
 Metagenomics sequencing data is not included in this repository due to their large file sizes; however, all data are publicly available under NCBI Bioproject PRJNA803721.
