@@ -49,7 +49,7 @@ All data files are found in and/or will be written to <code>data/</code>
 * <code>data/sequencing/</code> 
   * contains sequencing data and results for some analysis applied to sequencing data.
 
-Metagenomics sequencing data is not included in this repository due to their large file sizes; however, all data are publicly available under NCBI Bioproject PRJNA803721.
+Metagenomics sequencing data is not included in this repository due to their large file sizes; however, all data are publicly available under NCBI Bioproject PRJNA803721 (to be released soon).
 
 ### figures
 
